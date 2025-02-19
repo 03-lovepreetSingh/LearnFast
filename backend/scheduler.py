@@ -1,0 +1,121 @@
+from pytubefix import Playlist, YouTube
+from datetime import timedelta
+import concurrent.futures
+
+def fetch_video_details(index, video_url):
+    try:
+        video = YouTube(video_url)
+        return index, {"title": video.title, "duration": video.length, "link": video.watch_url}
+    except Exception as e:
+        return index, {"title": "Error", "duration": 0, "link": video_url, "error": str(e)}
+
+def fetch_playlist_details(playlist_url):
+    try:
+        playlist = Playlist(playlist_url)
+        if not playlist.video_urls:
+            raise ValueError("The playlist is empty or inaccessible.")
+
+        video_urls = list(playlist.video_urls)  # Preserve order
+        video_details = [None] * len(video_urls)  # Placeholder for results
+
+        # Use multithreading to speed up fetching
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(fetch_video_details, i, url) for i, url in enumerate(video_urls)]
+            for future in concurrent.futures.as_completed(futures):
+                index, details = future.result()
+                video_details[index] = details  # Store in correct order
+
+        return video_details
+    except Exception as e:
+        raise Exception(f"Error fetching playlist details: {e}")
+
+def create_schedule_time_based(video_details, daily_time_minutes):
+    daily_time_seconds = (daily_time_minutes - 10) * 60  # Deduct 10 minutes and convert to seconds
+    schedule = {}
+    day = 1
+    current_day_videos = []
+    current_day_duration = 0
+
+    for video in video_details:
+        if current_day_duration + video["duration"] <= daily_time_seconds:
+            current_day_videos.append(f"{video['link']} ({timedelta(seconds=video['duration'])})")
+            current_day_duration += video["duration"]
+        else:
+            schedule[f"Day {day}"] = current_day_videos
+            day += 1
+            current_day_videos = [f"{video['link']} ({timedelta(seconds=video['duration'])})"]
+            current_day_duration = video["duration"]
+
+    if current_day_videos:
+        schedule[f"Day {day}"] = current_day_videos
+
+    return schedule
+
+def create_schedule_day_based(video_details, num_days):
+    total_duration = sum(video["duration"] for video in video_details)
+    avg_daily_duration = total_duration / num_days
+    schedule = {}
+    current_day_duration = 0
+    day = 1
+    current_day_videos = []
+
+    avg_daily_hours = round((total_duration / num_days) / 3600, 2)
+    print(f"\nYou have to give approximately {avg_daily_hours} hours a day.")
+
+    for video in video_details:
+        if day < num_days and current_day_duration + video["duration"] > avg_daily_duration:
+            schedule[f"Day {day}"] = current_day_videos
+            day += 1
+            current_day_videos = []
+            current_day_duration = 0
+        current_day_videos.append(f"{video['link']} ({timedelta(seconds=video['duration'])})")
+        current_day_duration += video["duration"]
+
+    if current_day_videos:
+        schedule[f"Day {day}"] = current_day_videos
+
+    while day < num_days:
+        day += 1
+        schedule[f"Day {day}"] = ["Revision Day"]
+
+    return schedule
+
+def display_schedule(schedule):
+    for day, videos in schedule.items():
+        print(f"{day}: {videos}")
+
+def main():
+    try:
+        playlist_url = input("Please enter the playlist link: ").strip()
+        if not playlist_url:
+            raise ValueError("Playlist link cannot be empty.")
+
+        print("\nFetching playlist details... This may take a few seconds.")
+        video_details = fetch_playlist_details(playlist_url)
+        print(f"Found {len(video_details)} videos in the playlist.")
+
+        print("\nChoose an option:")
+        print("1. Schedule by daily study time (in minutes)")
+        print("2. Schedule by number of days to complete the playlist")
+        option = input("Enter your choice (1 or 2): ").strip()
+
+        if option == "1":
+            daily_time_minutes = int(input("Enter the amount of time you can dedicate daily (in minutes): "))
+            if daily_time_minutes <= 10:
+                raise ValueError("Daily study time must be greater than 10 minutes.")
+            schedule = create_schedule_time_based(video_details, daily_time_minutes)
+        elif option == "2":
+            num_days = int(input("Enter the number of days to complete the playlist: "))
+            if num_days <= 0:
+                raise ValueError("Number of days must be greater than 0.")
+            schedule = create_schedule_day_based(video_details, num_days)
+        else:
+            raise ValueError("Invalid option selected. Please choose 1 or 2.")
+
+        print("\nYour study schedule:")
+        display_schedule(schedule)
+    except Exception as e:
+        print(f"\nError: {e}")
+
+if __name__ == "__main__":
+    main()
