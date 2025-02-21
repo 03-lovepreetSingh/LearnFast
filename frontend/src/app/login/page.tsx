@@ -1,12 +1,61 @@
 "use client";
 import React, { useState } from "react";
-import { Rocket, Sun, Moon, Mail, Lock, ArrowRight } from "lucide-react";
+import { Rocket, Sun, Moon, Mail, Lock, ArrowRight, Loader } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import axios from "axios";
 
 export default function Login() {
+  const router = useRouter();
   const [isDarkMode, setIsDarkMode] = useState(true);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [formData, setFormData] = useState({
+    email: "",
+    password: "",
+  });
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value,
+    });
+    // Clear error when user starts typing
+    if (error) setError("");
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError("");
+
+    try {
+      const response = await axios.post(
+        "http://localhost:8000/api/auth/login",
+        formData,
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (response.data.token) {
+        // Store token and user data
+        localStorage.setItem("token", response.data.token);
+        localStorage.setItem("user", JSON.stringify(response.data.user));
+        
+        // Redirect to dashboard
+        router.push("/dashboard");
+      }
+    } catch (err: any) {
+      setError(
+        err.response?.data?.message || "An error occurred during login"
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
     <div
@@ -77,7 +126,15 @@ export default function Login() {
             >
               Welcome Back
             </h2>
-            <form className="space-y-6">
+
+            {/* Error Message */}
+            {error && (
+              <div className="mb-4 p-3 rounded-lg bg-red-100 border border-red-400 text-red-700">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-6">
               <div>
                 <label
                   className={`block mb-2 ${
@@ -95,17 +152,20 @@ export default function Login() {
                   />
                   <input
                     type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    name="email"
+                    value={formData.email}
+                    onChange={handleChange}
                     className={`w-full pl-10 pr-4 py-2 rounded-lg outline-none ${
                       isDarkMode
                         ? "bg-gray-800/50 text-white border-gray-700 focus:border-blue-500"
                         : "bg-white/50 text-indigo-900 border-indigo-200 focus:border-indigo-500"
                     } border-2 transition-colors`}
                     placeholder="your@email.com"
+                    required
                   />
                 </div>
               </div>
+
               <div>
                 <label
                   className={`block mb-2 ${
@@ -123,28 +183,41 @@ export default function Login() {
                   />
                   <input
                     type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    name="password"
+                    value={formData.password}
+                    onChange={handleChange}
                     className={`w-full pl-10 pr-4 py-2 rounded-lg outline-none ${
                       isDarkMode
                         ? "bg-gray-800/50 text-white border-gray-700 focus:border-blue-500"
                         : "bg-white/50 text-indigo-900 border-indigo-200 focus:border-indigo-500"
                     } border-2 transition-colors`}
                     placeholder="••••••••"
+                    required
                   />
                 </div>
               </div>
+
               <button
                 type="submit"
+                disabled={isLoading}
                 className={`w-full ${
                   isDarkMode
                     ? "bg-blue-500 hover:bg-blue-600"
                     : "bg-indigo-600 hover:bg-indigo-700"
-                } text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center`}
+                } text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center ${
+                  isLoading ? "opacity-70 cursor-not-allowed" : ""
+                }`}
               >
-                Sign In <ArrowRight className="ml-2" size={20} />
+                {isLoading ? (
+                  <Loader className="animate-spin" size={20} />
+                ) : (
+                  <>
+                    Sign In <ArrowRight className="ml-2" size={20} />
+                  </>
+                )}
               </button>
             </form>
+
             <div className="mt-6 text-center">
               <p
                 className={`${

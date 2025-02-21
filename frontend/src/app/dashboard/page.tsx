@@ -1,5 +1,8 @@
+// src/app/dashboard/page.tsx
 "use client";
 import { useState, useEffect } from "react";
+import { useRouter } from 'next/navigation';
+import { useAuth } from "../../contexts/AuthContext";
 import {
   Clock,
   Calendar,
@@ -19,6 +22,7 @@ import {
   Download,
   Filter,
   X,
+  LogOut
 } from "lucide-react";
 import { Line } from "react-chartjs-2";
 import {
@@ -55,6 +59,8 @@ interface DaySchedule {
 }
 
 export default function Dashboard() {
+  const router = useRouter();
+  const { user, logout, isAuthenticated } = useAuth();
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [playlistUrl, setPlaylistUrl] = useState("");
   const [scheduleType, setScheduleType] = useState<"daily" | "target">("daily");
@@ -68,6 +74,16 @@ export default function Dashboard() {
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [showCompletedOnly, setShowCompletedOnly] = useState(false);
   const [watchTimeData, setWatchTimeData] = useState<number[]>(Array(7).fill(0));
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      router.push('/login');
+    }
+  }, [isAuthenticated, router]);
+
+  useEffect(() => {
+    setWatchTimeData(calculateWatchTimeData());
+  }, [completedVideos]);
 
   const calculateDaysFromTarget = (targetDate: string): number => {
     if (!targetDate) return 7;
@@ -159,14 +175,16 @@ export default function Dashboard() {
     setError("");
 
     try {
+      const token = localStorage.getItem('token');
       const targetDays = scheduleType === "target" 
         ? calculateDaysFromTarget(targetDate)
         : null;
 
-      const response = await fetch('http://localhost:5000/api/schedule', {
+      const response = await fetch('http://localhost:8000/api/schedule', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           playlistUrl,
@@ -176,25 +194,35 @@ export default function Dashboard() {
         }),
       });
 
-      const data = await response.json();
-      
-      if (response.ok) {
-        setSchedule(formatScheduleData(data));
-        setCompletedVideos(new Set());
-      } else {
-        setError(data.error || 'Failed to generate schedule');
+      if (!response.ok) {
+        if (response.status === 401) {
+          logout();
+          router.push('/login');
+          return;
+        }
+        throw new Error('Failed to generate schedule');
       }
-    } catch (error) {
-      setError('Failed to connect to server');
-      console.error('Error generating schedule:', error);
+
+      const data = await response.json();
+      setSchedule(formatScheduleData(data));
+      setCompletedVideos(new Set());
+    } catch (error: any) {
+      setError(error.message || 'Failed to generate schedule');
+      console.error('Error:', error);
     } finally {
       setIsLoading(false);
     }
   };
 
-  useEffect(() => {
-    setWatchTimeData(calculateWatchTimeData());
-  }, [completedVideos]);
+  const handleLogout = () => {
+    logout();
+    router.push('/login');
+  };
+
+  // If not authenticated, don't render the dashboard
+  if (!isAuthenticated) {
+    return null;
+  }
 
   const analyticsData = {
     labels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
@@ -208,6 +236,8 @@ export default function Dashboard() {
       },
     ],
   };
+  // ... continuing from Part 1
+
   return (
     <div className={`min-h-screen transition-colors duration-300 ${
       isDarkMode
@@ -232,9 +262,18 @@ export default function Dashboard() {
             >
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
             </button>
-            <div className="flex items-center space-x-2">
-              <User className="text-gray-400" size={20} />
-              <span>User</span>
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <User className="text-gray-400" size={20} />
+                <span className="font-medium">{user?.fullName}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="flex items-center space-x-2 px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg transition-colors"
+              >
+                <LogOut size={18} />
+                <span>Logout</span>
+              </button>
             </div>
           </div>
         </div>
