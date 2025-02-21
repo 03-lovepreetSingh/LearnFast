@@ -180,7 +180,7 @@ export default function Dashboard() {
         ? calculateDaysFromTarget(targetDate)
         : null;
 
-      const response = await fetch('http://localhost:8000/api/schedule', {
+      const response = await fetch('http://localhost:5000/api/schedule', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
