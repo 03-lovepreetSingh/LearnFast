@@ -3,47 +3,48 @@ from datetime import timedelta
 import concurrent.futures
 
 def fetch_video_details(video):
-    """Fetches video details (title, duration, link) in parallel."""
     try:
         return {
             "title": video.title,
-            "duration": video.length if video.length else 0,  # Handle NoneType durations
-            "link": video.watch_url
+            "duration": video.length,  # Duration in seconds
+            "link": video.watch_url,
+            "thumbnail": video.thumbnail_url  # Fetching thumbnail
         }
     except Exception as e:
         print(f"Error fetching video details: {e}")
         return None
 
 def fetch_playlist_details(playlist_url):
-    """Fetches all video details from a playlist concurrently."""
     try:
         playlist = Playlist(playlist_url)
         if not playlist.video_urls:
             raise ValueError("The playlist is empty or inaccessible.")
-
+        
+        video_details = []
         with concurrent.futures.ThreadPoolExecutor() as executor:
             results = list(executor.map(fetch_video_details, playlist.videos))
-
-        return [video for video in results if video]  # Remove None results
+        
+        return [video for video in results if video]
     except Exception as e:
         raise Exception(f"Error fetching playlist details: {e}")
 
 def create_schedule_time_based(video_details, daily_time_minutes):
-    """Creates a study schedule based on daily available time."""
-    daily_time_seconds = (daily_time_minutes - 10) * 60  # Deduct 10 minutes
+    daily_time_seconds = (daily_time_minutes - 10) * 60  # Deduct 10 minutes and convert to seconds
     schedule = {}
     day = 1
     current_day_videos = []
     current_day_duration = 0
 
     for video in video_details:
+        video_entry = f"({video['thumbnail']}) ({video['title']}) {video['link']} ({timedelta(seconds=video['duration'])})"
+        
         if current_day_duration + video["duration"] <= daily_time_seconds:
-            current_day_videos.append(f"({video['title']}) {video['link']} ({timedelta(seconds=video['duration'])})")
+            current_day_videos.append(video_entry)
             current_day_duration += video["duration"]
         else:
             schedule[f"Day {day}"] = current_day_videos
             day += 1
-            current_day_videos = [f"({video['title']}) {video['link']} ({timedelta(seconds=video['duration'])})"]
+            current_day_videos = [video_entry]
             current_day_duration = video["duration"]
 
     if current_day_videos:
@@ -52,26 +53,26 @@ def create_schedule_time_based(video_details, daily_time_minutes):
     return schedule
 
 def create_schedule_day_based(video_details, num_days):
-    """Creates a study schedule based on the number of days."""
     total_duration = sum(video["duration"] for video in video_details)
-    avg_daily_duration = total_duration // num_days  # Ensure no decimal values
-    avg_hours = avg_daily_duration // 3600
-    avg_minutes = (avg_daily_duration % 3600) // 60
-
-    print(f"\nYou have to give approximately {avg_hours} hours {avg_minutes} minutes a day.")
-
+    avg_daily_duration = total_duration // num_days  # Ensuring no decimal time
     schedule = {}
     current_day_duration = 0
     day = 1
     current_day_videos = []
 
+    avg_hours = avg_daily_duration // 3600
+    avg_minutes = (avg_daily_duration % 3600) // 60
+    print(f"\nYou have to give approximately {avg_hours} hours {avg_minutes} minutes a day.")
+
     for video in video_details:
+        video_entry = f"({video['thumbnail']}) ({video['title']}) {video['link']} ({timedelta(seconds=video['duration'])})"
+        
         if day < num_days and current_day_duration + video["duration"] > avg_daily_duration:
             schedule[f"Day {day}"] = current_day_videos
             day += 1
             current_day_videos = []
             current_day_duration = 0
-        current_day_videos.append(f"({video['title']}) {video['link']} ({timedelta(seconds=video['duration'])})")
+        current_day_videos.append(video_entry)
         current_day_duration += video["duration"]
 
     if current_day_videos:
@@ -84,31 +85,25 @@ def create_schedule_day_based(video_details, num_days):
     return schedule
 
 def display_schedule(schedule):
-    """Displays the study schedule in a formatted manner."""
     for day, videos in schedule.items():
         print(f"{day}: {videos}")
 
 def main():
     try:
-        # Step 1: Get playlist link
         playlist_url = input("Please enter the playlist link: ").strip()
         if not playlist_url:
             raise ValueError("Playlist link cannot be empty.")
 
-        # Step 2: Fetch playlist details
         print("\nFetching playlist details... This may take a while.")
         video_details = fetch_playlist_details(playlist_url)
         print(f"Found {len(video_details)} videos in the playlist.")
 
-        # Step 3: Ask for the starting video number
         start_video = int(input("Enter the video number to start from: "))
         if start_video < 1 or start_video > len(video_details):
-            raise ValueError("Invalid video number. Please enter a valid number.")
+            raise ValueError("Invalid start video number.")
+        
+        video_details = video_details[start_video - 1:]
 
-        # Slice the list to start from the selected video
-        video_details = video_details[start_video - 1:]  # Adjusting for 0-based index
-
-        # Step 4: Ask for scheduling option
         print("\nChoose an option:")
         print("1. Schedule by daily study time (in minutes)")
         print("2. Schedule by number of days to complete the playlist")
@@ -127,7 +122,6 @@ def main():
         else:
             raise ValueError("Invalid option selected. Please choose 1 or 2.")
 
-        # Step 5: Display the schedule
         print("\nYour study schedule:")
         display_schedule(schedule)
 
