@@ -1,3 +1,5 @@
+# model.py
+
 from pytubefix import Playlist
 from datetime import timedelta
 import re
@@ -14,6 +16,27 @@ def format_duration(seconds):
     """Format duration in seconds to HH:MM:SS."""
     return str(timedelta(seconds=seconds))
 
+def get_video_thumbnail(video_id):
+    """Get video thumbnail URL."""
+    return f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+
+def extract_video_id(url):
+    """Extract video ID from YouTube URL."""
+    pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
+
+def parse_duration(duration_str):
+    """Convert duration string to seconds."""
+    parts = duration_str.split(':')
+    if len(parts) == 3:
+        hours, minutes, seconds = map(int, parts)
+        return hours * 3600 + minutes * 60 + seconds
+    elif len(parts) == 2:
+        minutes, seconds = map(int, parts)
+        return minutes * 60 + seconds
+    return int(parts[0])
+
 def fetch_playlist_details(playlist_url):
     """Fetch details of all videos in a playlist."""
     try:
@@ -24,10 +47,12 @@ def fetch_playlist_details(playlist_url):
         video_details = []
         for video in playlist.videos:
             try:
+                video_id = extract_video_id(video.watch_url)
                 video_details.append({
                     "title": video.title,
                     "duration": format_duration(video.length),
-                    "link": video.watch_url
+                    "link": video.watch_url,
+                    "thumbnail": get_video_thumbnail(video_id)
                 })
             except Exception as e:
                 print(f"Error processing video: {str(e)}")
@@ -40,91 +65,120 @@ def fetch_playlist_details(playlist_url):
     except Exception as e:
         raise Exception(f"Error fetching playlist details: {str(e)}")
 
-def create_schedule_time_based(video_details, daily_time_minutes):
+def create_schedule_time_based(video_details, daily_time_minutes, completed_videos=None, last_day_number=0, completed_video_details=None):
     """Create schedule based on daily time limit."""
     try:
+        completed_videos = completed_videos or []
+        completed_video_details = completed_video_details or []
         daily_time_seconds = (daily_time_minutes - 10) * 60
         schedule = {}
-        day = 1
+        
+        # First, preserve completed videos in their original days
+        for video in completed_video_details:
+            day_key = f"Day {last_day_number}"
+            if day_key not in schedule:
+                schedule[day_key] = []
+            schedule[day_key].append(video)
+
+        # Start scheduling remaining videos from the next day
+        current_day = last_day_number + 1
         current_day_videos = []
         current_day_duration = 0
 
-        for video in video_details:
-            # Convert duration string to seconds
-            duration_parts = video["duration"].split(':')
-            video_duration = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts))
+        # Schedule only non-completed videos
+        remaining_videos = [
+            video for video in video_details 
+            if video['link'] not in completed_videos
+        ]
+
+        for video in remaining_videos:
+            video_duration = parse_duration(video["duration"])
 
             if current_day_duration + video_duration <= daily_time_seconds:
-                current_day_videos.append({
-                    "title": video["title"],
-                    "duration": video["duration"],
-                    "link": video["link"]
-                })
+                current_day_videos.append(video)
                 current_day_duration += video_duration
             else:
                 if current_day_videos:
-                    schedule[f"Day {day}"] = current_day_videos
-                    day += 1
-                current_day_videos = [{
-                    "title": video["title"],
-                    "duration": video["duration"],
-                    "link": video["link"]
-                }]
+                    schedule[f"Day {current_day}"] = current_day_videos
+                    current_day += 1
+                current_day_videos = [video]
                 current_day_duration = video_duration
 
         if current_day_videos:
-            schedule[f"Day {day}"] = current_day_videos
+            schedule[f"Day {current_day}"] = current_day_videos
 
         return schedule
+
     except Exception as e:
         raise ValueError(f"Error creating time-based schedule: {str(e)}")
 
-def create_schedule_day_based(video_details, num_days):
+def create_schedule_day_based(video_details, num_days, completed_videos=None, last_day_number=0, completed_video_details=None):
     """Create schedule based on number of days."""
     try:
-        # Calculate total duration
-        total_duration = 0
-        for video in video_details:
-            duration_parts = video["duration"].split(':')
-            total_duration += sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts))
-
-        avg_daily_duration = total_duration / num_days
+        completed_videos = completed_videos or []
+        completed_video_details = completed_video_details or []
         schedule = {}
-        current_day_duration = 0
-        day = 1
+
+        # First, preserve completed videos in their original days
+        for video in completed_video_details:
+            day_key = f"Day {last_day_number}"
+            if day_key not in schedule:
+                schedule[day_key] = []
+            schedule[day_key].append(video)
+
+        # Calculate total duration for remaining videos
+        remaining_videos = [
+            video for video in video_details 
+            if video['link'] not in completed_videos
+        ]
+
+        if not remaining_videos:
+            return schedule
+
+        total_duration = sum(
+            parse_duration(video["duration"])
+            for video in remaining_videos
+        )
+
+        # Calculate average daily duration for remaining days
+        remaining_days = num_days - last_day_number
+        if remaining_days <= 0:
+            remaining_days = 1
+        avg_daily_duration = total_duration / remaining_days
+
+        # Start scheduling from the next day
+        current_day = last_day_number + 1
         current_day_videos = []
+        current_day_duration = 0
 
-        for video in video_details:
-            duration_parts = video["duration"].split(':')
-            video_duration = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts))
+        for video in remaining_videos:
+            video_duration = parse_duration(video["duration"])
 
-            if day < num_days and current_day_duration + video_duration > avg_daily_duration:
+            if current_day < num_days and current_day_duration + video_duration > avg_daily_duration:
                 if current_day_videos:
-                    schedule[f"Day {day}"] = current_day_videos
-                    day += 1
+                    schedule[f"Day {current_day}"] = current_day_videos
+                    current_day += 1
                 current_day_videos = []
                 current_day_duration = 0
 
-            current_day_videos.append({
-                "title": video["title"],
-                "duration": video["duration"],
-                "link": video["link"]
-            })
+            current_day_videos.append(video)
             current_day_duration += video_duration
 
         if current_day_videos:
-            schedule[f"Day {day}"] = current_day_videos
+            schedule[f"Day {current_day}"] = current_day_videos
 
         # Add revision days if needed
-        while day < num_days:
-            day += 1
-            schedule[f"Day {day}"] = [{
+        while current_day < num_days:
+            current_day += 1
+            schedule[f"Day {current_day}"] = [{
                 "title": "Revision Day",
                 "duration": "00:00:00",
-                "link": None
+                "link": None,
+                "thumbnail": None
             }]
 
         return schedule
+
     except Exception as e:
         raise ValueError(f"Error creating day-based schedule: {str(e)}")
 
@@ -132,7 +186,14 @@ def get_schedule_summary(schedule):
     """Get summary of the schedule."""
     total_videos = sum(len(videos) for videos in schedule.values())
     total_days = len(schedule)
+    total_duration = sum(
+        sum(parse_duration(video["duration"]) for video in videos if video["duration"] != "00:00:00")
+        for videos in schedule.values()
+    )
+    
     return {
         "totalVideos": total_videos,
-        "totalDays": total_days
+        "totalDays": total_days,
+        "totalDuration": format_duration(total_duration),
+        "averageDailyDuration": format_duration(total_duration // total_days) if total_days > 0 else "00:00:00"
     }

@@ -1,3 +1,5 @@
+# app.py
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
@@ -5,7 +7,8 @@ from model import (
     fetch_playlist_details,
     create_schedule_time_based,
     create_schedule_day_based,
-    validate_playlist_url
+    validate_playlist_url,
+    get_schedule_summary
 )
 
 app = Flask(__name__)
@@ -20,6 +23,9 @@ def create_schedule():
 
         playlist_url = data.get('playlistUrl')
         schedule_type = data.get('scheduleType')
+        completed_videos = data.get('completedVideos', [])
+        last_day_number = data.get('lastDayNumber', 0)
+        completed_video_details = data.get('completedVideoDetails', [])
         
         # Validate playlist URL
         try:
@@ -41,7 +47,14 @@ def create_schedule():
                 daily_minutes = int(daily_hours * 60)
                 if daily_minutes <= 10:
                     return jsonify({'error': 'Daily study time must be greater than 10 minutes'}), 400
-                schedule = create_schedule_time_based(video_details, daily_minutes)
+                
+                schedule = create_schedule_time_based(
+                    video_details=video_details,
+                    daily_time_minutes=daily_minutes,
+                    completed_videos=completed_videos,
+                    last_day_number=last_day_number,
+                    completed_video_details=completed_video_details
+                )
             except ValueError as e:
                 return jsonify({'error': str(e)}), 400
         else:
@@ -49,11 +62,23 @@ def create_schedule():
                 target_days = int(data.get('targetDays', 7))
                 if target_days <= 0:
                     return jsonify({'error': 'Target days must be greater than 0'}), 400
-                schedule = create_schedule_day_based(video_details, target_days)
+                
+                schedule = create_schedule_day_based(
+                    video_details=video_details,
+                    num_days=target_days,
+                    completed_videos=completed_videos,
+                    last_day_number=last_day_number,
+                    completed_video_details=completed_video_details
+                )
             except ValueError as e:
                 return jsonify({'error': str(e)}), 400
 
-        return jsonify(schedule)
+        # Add schedule summary
+        summary = get_schedule_summary(schedule)
+        return jsonify({
+            'schedule': schedule,
+            'summary': summary
+        })
 
     except Exception as e:
         return jsonify({'error': f'Server error: {str(e)}'}), 500
@@ -66,4 +91,4 @@ def health_check():
     })
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
