@@ -1,4 +1,5 @@
-// src/app/schedule/[id]/page.tsx
+/* @next-codemod-ignore */
+
 import ViewScheduleClient from "./ViewScheduleClient";
 
 export default async function ViewSchedulePage({
@@ -6,7 +7,7 @@ export default async function ViewSchedulePage({
 }: {
   params: { id: string };
 }) {
-  const { id } = await params; // Ensure it's awaited
+  const { id } = params; // ✅ No need to await, params is already available
 
   return <ViewScheduleClient scheduleId={id} />;
 }
