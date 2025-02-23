@@ -239,7 +239,7 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
         };
   
         setIsLoading(true);
-        const response = await fetch('http://localhost:5000/api/schedule', {
+        const response = await fetch('https://python-backend-9i5a.onrender.com/api/schedule', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -255,7 +255,7 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
         const data = await response.json();
         
         // Delete old schedule
-        await fetch(`http://localhost:5000/api/schedules/${scheduleId}`, {
+        await fetch(`https://python-backend-9i5a.onrender.com/api/schedules/${scheduleId}`, {
           method: 'DELETE',
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -294,7 +294,7 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
       try {
           const token = localStorage.getItem('token');
           // Update the URL to match the backend endpoint
-          const response = await fetch(`http://localhost:5000/api/schedules/detail/${scheduleId}`, {
+          const response = await fetch(`https://python-backend-9i5a.onrender.com/api/schedules/detail/${scheduleId}`, {
               headers: {
                   'Authorization': `Bearer ${token}`,
                   'Content-Type': 'application/json'
@@ -355,7 +355,7 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
         
         if (video.completed === completed) return;
   
-        const response = await fetch(`http://localhost:5000/api/schedules/${scheduleId}/progress`, {
+        const response = await fetch(`https://python-backend-9i5a.onrender.com/api/schedules/${scheduleId}/progress`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
