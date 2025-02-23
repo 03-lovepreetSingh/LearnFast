@@ -1,13 +1,11 @@
-/* @next-codemod-ignore */
+// src/app/schedule/[id]/page.tsx
+import ViewScheduleClient from './ViewScheduleClient';
 
-import ViewScheduleClient from "./ViewScheduleClient";
+type Props = {
+  params: Promise<{ id: string }>;
+};
 
-export default async function ViewSchedulePage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const { id } = params; // ✅ No need to await, params is already available
-
-  return <ViewScheduleClient scheduleId={id} />;
+export default async function ViewSchedulePage({ params }: Props) {
+  const resolvedParams = await params;
+  return <ViewScheduleClient scheduleId={resolvedParams.id} />;
 }
