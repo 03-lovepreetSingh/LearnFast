@@ -4,9 +4,11 @@ import { Rocket, Sun, Moon, Mail, Lock, ArrowRight, Loader } from "lucide-react"
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import axios from "axios";
+import { useAuth } from "../../contexts/AuthContext";
 
 export default function Login() {
   const router = useRouter();
+  const { login } = useAuth();
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -41,11 +43,8 @@ export default function Login() {
       );
 
       if (response.data.token) {
-        // Store token and user data
-        localStorage.setItem("token", response.data.token);
-        localStorage.setItem("user", JSON.stringify(response.data.user));
-        
-        // Redirect to dashboard
+        // Use the login function from AuthContext
+        login(response.data.user, response.data.token);
         router.push("/dashboard");
       }
     } catch (err: any) {

@@ -3,6 +3,7 @@
 from pytubefix import Playlist
 from datetime import timedelta
 import re
+import concurrent.futures
 
 def validate_playlist_url(url):
     """Validate YouTube playlist URL."""
@@ -37,26 +38,34 @@ def parse_duration(duration_str):
         return minutes * 60 + seconds
     return int(parts[0])
 
+def fetch_single_video(video):
+    """Fetch details for a single video."""
+    try:
+        video_id = extract_video_id(video.watch_url)
+        return {
+            "title": video.title,
+            "duration": format_duration(video.length),
+            "link": video.watch_url,
+            "thumbnail": get_video_thumbnail(video_id)
+        }
+    except Exception as e:
+        print(f"Error processing video: {str(e)}")
+        return None
+
 def fetch_playlist_details(playlist_url):
-    """Fetch details of all videos in a playlist."""
+    """Fetch details of all videos in a playlist using concurrent processing."""
     try:
         playlist = Playlist(playlist_url)
         if not playlist.videos:
             raise ValueError("The playlist is empty or inaccessible.")
         
-        video_details = []
-        for video in playlist.videos:
-            try:
-                video_id = extract_video_id(video.watch_url)
-                video_details.append({
-                    "title": video.title,
-                    "duration": format_duration(video.length),
-                    "link": video.watch_url,
-                    "thumbnail": get_video_thumbnail(video_id)
-                })
-            except Exception as e:
-                print(f"Error processing video: {str(e)}")
-                continue
+        # Use ThreadPoolExecutor for parallel processing
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Process videos concurrently
+            video_details = list(executor.map(fetch_single_video, playlist.videos))
+        
+        # Filter out None values (failed videos)
+        video_details = [video for video in video_details if video is not None]
         
         if not video_details:
             raise ValueError("No valid videos found in playlist")
