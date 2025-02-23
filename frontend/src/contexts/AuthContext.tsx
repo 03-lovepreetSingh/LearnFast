@@ -48,7 +48,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       // Verify token with backend
-      const response = await fetch('http://localhost:8000/api/auth/verify', {
+      const response = await fetch('https://learnfast-bwdo.onrender.com/api/auth/verify', {
         headers: {
           'Authorization': `Bearer ${storedToken}`
         }
