@@ -34,8 +34,9 @@ CORS(app, resources={
 
 # MongoDB connection
 MONGO_URI = os.getenv('MONGODB_URI')
+DB_NAME = os.getenv('DB_NAME', 'your_database_name')
 client = MongoClient(MONGO_URI)
-db = client['your_database_name']  # Replace with your database name
+db = client[DB_NAME]
 schedules_collection = db.schedules
 
 # Configure Gemini
@@ -43,7 +44,28 @@ GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel('gemini-pro')
 
-# Middleware for handling preflight requests
+# Helper Functions
+def validate_object_id(id_string: str) -> bool:
+    try:
+        ObjectId(id_string)
+        return True
+    except:
+        return False
+
+def format_schedule_response(schedule):
+    if not schedule:
+        return None
+    
+    schedule['_id'] = str(schedule['_id'])
+    schedule['userId'] = str(schedule['userId'])
+    schedule['created_at'] = schedule['created_at'].isoformat()
+    schedule['updated_at'] = schedule['updated_at'].isoformat()
+    
+    for day_schedule in schedule['schedule_data']:
+        if isinstance(day_schedule['date'], datetime):
+            day_schedule['date'] = day_schedule['date'].strftime('%Y-%m-%d')
+    
+    return schedule# Middleware for handling preflight requests
 @app.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
@@ -54,55 +76,26 @@ def handle_preflight():
         response.headers.add("Access-Control-Allow-Credentials", "true")
         return response
 
-def get_chat_prompt(message: str, video_title: Optional[str] = None, mode: str = 'general') -> str:
-    """Generate appropriate prompt based on chat mode and context"""
-    if mode == 'video':
-        return f"""You are an AI tutor focusing specifically on the video: "{video_title}".
-        Please answer the following question in the context of this video only: {message}
-        If the question isn't directly related to this video, kindly remind the user that you're
-        currently focused on discussing this specific video."""
-    else:
-        return f"""You are an AI learning assistant helping with educational content.
-        Please answer the following question: {message}"""
+@app.route('/api/schedules/detail/<schedule_id>', methods=['GET', 'OPTIONS'])
+def get_schedule_detail(schedule_id):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
 
-def format_gemini_response(response) -> str:
-    """Format and clean Gemini API response"""
     try:
-        text = response.text.replace('```', '').strip()
-        max_length = 1000
-        if len(text) > max_length:
-            text = text[:max_length] + "... (response truncated)"
-        return text
+        if not validate_object_id(schedule_id):
+            return jsonify({'error': 'Invalid schedule ID format'}), 400
+
+        schedule = schedules_collection.find_one({'_id': ObjectId(schedule_id)})
+        
+        if not schedule:
+            return jsonify({'error': 'Schedule not found'}), 404
+
+        formatted_schedule = format_schedule_response(schedule)
+        return jsonify({'schedule': formatted_schedule})
+
     except Exception as e:
-        return f"I apologize, but I encountered an error processing the response: {str(e)}"
-
-def format_schedule_for_db(schedule, user_id, playlist_url, schedule_type, settings, title="Untitled Schedule"):
-    """Format schedule data for MongoDB storage"""
-    schedule_data = []
-    current_date = datetime.now()
-    
-    for day, videos in schedule.items():
-        day_number = int(day.split()[1])
-        schedule_data.append({
-            'day': day,
-            'date': (current_date + timedelta(days=day_number - 1)).strftime('%Y-%m-%d'),
-            'videos': [{**video, 'completed': False} for video in videos]
-        })
-
-    summary = get_schedule_summary(schedule)
-    
-    return {
-        'userId': ObjectId(user_id),
-        'title': title,
-        'playlist_url': playlist_url,
-        'schedule_type': schedule_type,
-        'settings': settings,
-        'schedule_data': schedule_data,
-        'summary': summary,
-        'status': 'active',
-        'created_at': datetime.now(),
-        'updated_at': datetime.now()
-    }
+        print(f"Error fetching schedule: {str(e)}")
+        return jsonify({'error': 'Failed to fetch schedule'}), 500
 
 @app.route('/api/schedule', methods=['POST', 'OPTIONS'])
 def create_schedule():
@@ -122,11 +115,13 @@ def create_schedule():
         completed_videos = data.get('completedVideos', [])
         last_day_number = data.get('lastDayNumber', 0)
         completed_video_details = data.get('completedVideoDetails', [])
+        is_adjustment = data.get('isAdjustment', False)
+        old_schedule_id = data.get('oldScheduleId')
 
         # Validate required fields
-        if not user_id:
-            return jsonify({'error': 'User ID is required'}), 400
-        
+        if not all([user_id, playlist_url, schedule_type]):
+            return jsonify({'error': 'Missing required fields'}), 400
+
         # Validate playlist URL
         try:
             validate_playlist_url(playlist_url)
@@ -177,68 +172,60 @@ def create_schedule():
                 return jsonify({'error': str(e)}), 400
 
         # Format and save schedule to MongoDB
-        schedule_doc = format_schedule_for_db(
-            schedule=schedule,
-            user_id=user_id,
-            playlist_url=playlist_url,
-            schedule_type=schedule_type,
-            settings=settings,
-            title=title
-        )
+        schedule_doc = {
+            'userId': ObjectId(user_id),
+            'title': title,
+            'playlist_url': playlist_url,
+            'schedule_type': schedule_type,
+            'settings': settings,
+            'schedule_data': [
+                {
+                    'day': day,
+                    'date': (datetime.now() + timedelta(days=int(day.split()[1]) - 1)).strftime('%Y-%m-%d'),
+                    'videos': videos
+                }
+                for day, videos in schedule.items()
+            ],
+            'summary': get_schedule_summary(schedule),
+            'status': 'active',
+            'created_at': datetime.now(),
+            'updated_at': datetime.now()
+        }
+
+        # If this is an adjustment, handle the old schedule
+        if is_adjustment and old_schedule_id:
+            try:
+                old_schedule = schedules_collection.find_one({'_id': ObjectId(old_schedule_id)})
+                if old_schedule:
+                    # Copy completion status from old schedule
+                    completed_map = {
+                        video['link']: video['completed']
+                        for day in old_schedule['schedule_data']
+                        for video in day['videos']
+                    }
+                    for day in schedule_doc['schedule_data']:
+                        for video in day['videos']:
+                            if video['link'] in completed_map:
+                                video['completed'] = completed_map[video['link']]
+                    
+                    # Delete old schedule
+                    schedules_collection.delete_one({'_id': ObjectId(old_schedule_id)})
+            except Exception as e:
+                return jsonify({'error': f'Error handling schedule adjustment: {str(e)}'}), 500
 
         # Save to MongoDB
         result = schedules_collection.insert_one(schedule_doc)
         
-        # Get schedule summary
-        summary = get_schedule_summary(schedule)
-
         return jsonify({
             'message': 'Schedule created successfully',
             'scheduleId': str(result.inserted_id),
             'schedule': schedule,
-            'summary': summary
+            'summary': schedule_doc['summary']
         })
 
     except Exception as e:
-        return jsonify({'error': f'Server error: {str(e)}'}), 500
-
-@app.route('/api/chat', methods=['POST', 'OPTIONS'])
-def chat():
-    if request.method == 'OPTIONS':
-        return jsonify({}), 200
-
-    try:
-        data = request.json
-        if not data or 'message' not in data:
-            return jsonify({'error': 'Message is required'}), 400
-
-        message = data.get('message')
-        video_title = data.get('videoTitle')
-        mode = data.get('mode', 'general')
-
-        # Generate prompt based on mode
-        prompt = get_chat_prompt(message, video_title, mode)
-
-        # Get response from Gemini
-        try:
-            response = model.generate_content(prompt)
-            formatted_response = format_gemini_response(response)
-            
-            return jsonify({
-                'response': formatted_response,
-                'status': 'success'
-            })
-        except Exception as e:
-            return jsonify({
-                'error': f'Error generating response: {str(e)}',
-                'status': 'error'
-            }), 500
-
-    except Exception as e:
-        return jsonify({
-            'error': f'Server error: {str(e)}',
-            'status': 'error'
-        }), 500
+        print(f"Error creating schedule: {str(e)}")
+        return jsonify({'error': 'Failed to create schedule'}), 500
 
 @app.route('/api/schedules/<user_id>', methods=['GET', 'OPTIONS'])
 def get_user_schedules(user_id):
@@ -246,74 +233,61 @@ def get_user_schedules(user_id):
         return jsonify({}), 200
 
     try:
-        # Convert string user_id to ObjectId
-        user_object_id = ObjectId(user_id)
-        
-        # Fetch schedules from MongoDB
-        schedules = list(schedules_collection.find({'userId': user_object_id}))
-        
-        # Convert ObjectId to string for JSON serialization
-        for schedule in schedules:
-            schedule['_id'] = str(schedule['_id'])
-            schedule['userId'] = str(schedule['userId'])
-            # Convert datetime objects to ISO format strings
-            schedule['created_at'] = schedule['created_at'].isoformat()
-            schedule['updated_at'] = schedule['updated_at'].isoformat()
-        
-        return jsonify({'schedules': schedules})
-    except Exception as e:
-        return jsonify({'error': f'Error fetching schedules: {str(e)}'}), 500
+        if not validate_object_id(user_id):
+            return jsonify({'error': 'Invalid user ID format'}), 400
 
-@app.route('/api/schedules/detail/<schedule_id>', methods=['GET', 'OPTIONS'])
-def get_schedule_detail(schedule_id):
-    if request.method == 'OPTIONS':
-        return jsonify({}), 200
+        schedules = list(schedules_collection.find({'userId': ObjectId(user_id)}))
+        formatted_schedules = [format_schedule_response(schedule) for schedule in schedules]
         
-    try:
-        # Convert string schedule_id to ObjectId
-        schedule_object_id = ObjectId(schedule_id)
-        
-        # Fetch schedule from MongoDB
-        schedule = schedules_collection.find_one({'_id': schedule_object_id})
-        
-        if not schedule:
-            return jsonify({'error': 'Schedule not found'}), 404
-            
-        # Convert ObjectId to string for JSON serialization
-        schedule['_id'] = str(schedule['_id'])
-        schedule['userId'] = str(schedule['userId'])
-        
-        # Convert datetime objects to ISO format strings
-        schedule['created_at'] = schedule['created_at'].isoformat()
-        schedule['updated_at'] = schedule['updated_at'].isoformat()
-        
-        # Format dates in schedule_data
-        for day_schedule in schedule['schedule_data']:
-            if isinstance(day_schedule['date'], datetime):
-                day_schedule['date'] = day_schedule['date'].strftime('%Y-%m-%d')
-        
-        return jsonify({'schedule': schedule})
+        return jsonify({'schedules': formatted_schedules})
     except Exception as e:
-        return jsonify({'error': f'Error fetching schedule: {str(e)}'}), 500
-
-@app.route('/api/schedules/<schedule_id>', methods=['DELETE', 'OPTIONS'])
-def delete_schedule(schedule_id):
+        print(f"Error fetching user schedules: {str(e)}")
+        return jsonify({'error': 'Failed to fetch schedules'}), 500@app.route('/api/schedules/<schedule_id>/adjust', methods=['POST', 'OPTIONS'])
+def adjust_schedule(schedule_id):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
     try:
-        # Convert string schedule_id to ObjectId
-        schedule_object_id = ObjectId(schedule_id)
-        
-        # Delete schedule from MongoDB
-        result = schedules_collection.delete_one({'_id': schedule_object_id})
-        
-        if result.deleted_count == 0:
+        data = request.json
+        if not data or 'newDailyHours' not in data:
+            return jsonify({'error': 'New daily hours required'}), 400
+
+        if not validate_object_id(schedule_id):
+            return jsonify({'error': 'Invalid schedule ID format'}), 400
+
+        old_schedule = schedules_collection.find_one({'_id': ObjectId(schedule_id)})
+        if not old_schedule:
             return jsonify({'error': 'Schedule not found'}), 404
-            
-        return jsonify({'message': 'Schedule deleted successfully'})
+
+        # Prepare data for new schedule creation
+        adjustment_data = {
+            'userId': str(old_schedule['userId']),
+            'playlistUrl': old_schedule['playlist_url'],
+            'scheduleType': 'daily',
+            'dailyHours': float(data['newDailyHours']),
+            'title': old_schedule['title'],
+            'isAdjustment': True,
+            'oldScheduleId': schedule_id
+        }
+
+        # Get completed videos information
+        completed_videos = []
+        completed_video_details = []
+        for day in old_schedule['schedule_data']:
+            for video in day['videos']:
+                if video.get('completed'):
+                    completed_videos.append(video['link'])
+                    completed_video_details.append(video)
+
+        adjustment_data['completedVideos'] = completed_videos
+        adjustment_data['completedVideoDetails'] = completed_video_details
+
+        # Create new schedule
+        return create_schedule()
+
     except Exception as e:
-        return jsonify({'error': f'Error deleting schedule: {str(e)}'}), 500
+        print(f"Error adjusting schedule: {str(e)}")
+        return jsonify({'error': 'Failed to adjust schedule'}), 500
 
 @app.route('/api/schedules/<schedule_id>/progress', methods=['PUT', 'OPTIONS'])
 def update_video_progress(schedule_id):
@@ -323,18 +297,17 @@ def update_video_progress(schedule_id):
     try:
         data = request.json
         if not data or 'videoId' not in data:
-            return jsonify({'error': 'Video ID is required'}), 400
-            
+            return jsonify({'error': 'Video ID required'}), 400
+
+        if not validate_object_id(schedule_id):
+            return jsonify({'error': 'Invalid schedule ID format'}), 400
+
         video_id = data['videoId']
         completed = data.get('completed', True)
         
-        # Convert string schedule_id to ObjectId
-        schedule_object_id = ObjectId(schedule_id)
-        
-        # Update video completion status
         result = schedules_collection.update_one(
             {
-                '_id': schedule_object_id,
+                '_id': ObjectId(schedule_id),
                 'schedule_data.videos.link': video_id
             },
             {
@@ -351,7 +324,8 @@ def update_video_progress(schedule_id):
             
         return jsonify({'message': 'Progress updated successfully'})
     except Exception as e:
-        return jsonify({'error': f'Error updating progress: {str(e)}'}), 500
+        print(f"Error updating progress: {str(e)}")
+        return jsonify({'error': 'Failed to update progress'}), 500
 
 @app.route('/api/schedules/<schedule_id>/verify-video', methods=['POST', 'OPTIONS'])
 def verify_video(schedule_id):
@@ -361,30 +335,24 @@ def verify_video(schedule_id):
     try:
         data = request.json
         if not data or 'videoTitle' not in data:
-            return jsonify({'error': 'Video title is required'}), 400
+            return jsonify({'error': 'Video title required'}), 400
 
-        video_title = data['videoTitle']
-        schedule_object_id = ObjectId(schedule_id)
-        
-        # Check if video exists in schedule
+        if not validate_object_id(schedule_id):
+            return jsonify({'error': 'Invalid schedule ID format'}), 400
+
         schedule = schedules_collection.find_one({
-            '_id': schedule_object_id,
-            'schedule_data.videos.title': video_title
+            '_id': ObjectId(schedule_id),
+            'schedule_data.videos.title': data['videoTitle']
         })
         
-        if not schedule:
-            return jsonify({
-                'exists': False,
-                'message': 'Video not found in schedule'
-            })
-            
         return jsonify({
-            'exists': True,
-            'message': 'Video found in schedule'
+            'exists': bool(schedule),
+            'message': 'Video found in schedule' if schedule else 'Video not found in schedule'
         })
 
     except Exception as e:
-        return jsonify({'error': f'Error verifying video: {str(e)}'}), 500
+        print(f"Error verifying video: {str(e)}")
+        return jsonify({'error': 'Failed to verify video'}), 500
 
 @app.route('/api/schedules/<schedule_id>/video-context/<video_title>', methods=['GET', 'OPTIONS'])
 def get_video_context(schedule_id, video_title):
@@ -392,18 +360,17 @@ def get_video_context(schedule_id, video_title):
         return jsonify({}), 200
 
     try:
-        schedule_object_id = ObjectId(schedule_id)
-        
-        # Find the video in the schedule
+        if not validate_object_id(schedule_id):
+            return jsonify({'error': 'Invalid schedule ID format'}), 400
+
         schedule = schedules_collection.find_one({
-            '_id': schedule_object_id,
+            '_id': ObjectId(schedule_id),
             'schedule_data.videos.title': video_title
         })
         
         if not schedule:
             return jsonify({'error': 'Video not found'}), 404
 
-        # Extract video details
         video_info = None
         for day in schedule['schedule_data']:
             for video in day['videos']:
@@ -426,7 +393,48 @@ def get_video_context(schedule_id, video_title):
         })
 
     except Exception as e:
-        return jsonify({'error': f'Error fetching video context: {str(e)}'}), 500
+        print(f"Error fetching video context: {str(e)}")
+        return jsonify({'error': 'Failed to fetch video context'}), 500
+
+@app.route('/api/debug/schedule/<schedule_id>', methods=['GET'])
+def debug_schedule(schedule_id):
+    try:
+        # Test MongoDB connection
+        client.admin.command('ping')
+        print(f"MongoDB connection successful")
+        
+        # Validate ID format
+        if not validate_object_id(schedule_id):
+            return jsonify({'error': 'Invalid schedule ID format'}), 400
+        
+        # Check if schedule exists
+        schedule = schedules_collection.find_one({'_id': ObjectId(schedule_id)})
+        
+        if not schedule:
+            print(f"Schedule not found: {schedule_id}")
+            return jsonify({
+                'exists': False,
+                'message': 'Schedule not found',
+                'id_checked': schedule_id,
+                'database': DB_NAME
+            })
+            
+        print(f"Schedule found: {schedule.get('title', 'Untitled')}")
+        return jsonify({
+            'exists': True,
+            'message': 'Schedule found',
+            'title': schedule.get('title'),
+            'id': str(schedule['_id']),
+            'database': DB_NAME
+        })
+        
+    except Exception as e:
+        print(f"Debug error: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'mongodb_uri': MONGO_URI[:20] + '...' if MONGO_URI else 'Not set',
+            'database': DB_NAME
+        }), 500
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -434,24 +442,21 @@ def health_check():
         # Check MongoDB connection
         client.admin.command('ping')
         
-        # Check Gemini API connection
-        try:
-            test_response = model.generate_content("Test connection")
-            gemini_status = "connected"
-        except Exception as e:
-            gemini_status = f"disconnected (Error: {str(e)})"
+        # Check Gemini API
+        test_response = model.generate_content("Test connection")
+        gemini_status = "connected"
 
         return jsonify({
             'status': 'healthy',
             'database': 'connected',
+            'database_name': DB_NAME,
             'gemini_api': gemini_status,
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
+        print(f"Health check error: {str(e)}")
         return jsonify({
             'status': 'unhealthy',
-            'database': 'disconnected',
-            'gemini_api': 'unknown',
             'error': str(e),
             'timestamp': datetime.now().isoformat()
         }), 500
@@ -467,14 +472,16 @@ if __name__ == '__main__':
         exit(1)
     
     # Print startup information
-    print("Starting LearnFast API Server")
+    print("\n=== Starting LearnFast API Server ===")
+    print(f"Database: {DB_NAME}")
     print(f"MongoDB URI: {MONGO_URI[:20]}..." if MONGO_URI else "MongoDB URI not set")
     print(f"Gemini API Key: {'*' * 20}" if GOOGLE_API_KEY else "Gemini API Key not set")
-    print("\nAPI Routes:")
-    print("============")
+    print("\nAvailable Routes:")
+    print("================")
     for rule in app.url_map.iter_rules():
         if rule.endpoint != 'static':
             print(f"{rule.rule} [{', '.join(rule.methods - {'OPTIONS', 'HEAD'})}]")
     print("\nServer is running in development mode")
+    print("=====================================\n")
     
     app.run(debug=True, port=5000)
