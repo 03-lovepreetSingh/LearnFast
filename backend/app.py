@@ -1,12 +1,12 @@
-# app.py
-
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 from bson import ObjectId
 import os
 from dotenv import load_dotenv
+import google.generativeai as genai
+from typing import Optional
 from model import (
     fetch_playlist_details,
     create_schedule_time_based,
@@ -25,7 +25,10 @@ CORS(app, resources={
     r"/*": {
         "origins": ["http://localhost:3000"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True,
+        "max_age": 120
     }
 })
 
@@ -34,6 +37,44 @@ MONGO_URI = os.getenv('MONGODB_URI')
 client = MongoClient(MONGO_URI)
 db = client['your_database_name']  # Replace with your database name
 schedules_collection = db.schedules
+
+# Configure Gemini
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
+
+# Middleware for handling preflight requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response
+
+def get_chat_prompt(message: str, video_title: Optional[str] = None, mode: str = 'general') -> str:
+    """Generate appropriate prompt based on chat mode and context"""
+    if mode == 'video':
+        return f"""You are an AI tutor focusing specifically on the video: "{video_title}".
+        Please answer the following question in the context of this video only: {message}
+        If the question isn't directly related to this video, kindly remind the user that you're
+        currently focused on discussing this specific video."""
+    else:
+        return f"""You are an AI learning assistant helping with educational content.
+        Please answer the following question: {message}"""
+
+def format_gemini_response(response) -> str:
+    """Format and clean Gemini API response"""
+    try:
+        text = response.text.replace('```', '').strip()
+        max_length = 1000
+        if len(text) > max_length:
+            text = text[:max_length] + "... (response truncated)"
+        return text
+    except Exception as e:
+        return f"I apologize, but I encountered an error processing the response: {str(e)}"
 
 def format_schedule_for_db(schedule, user_id, playlist_url, schedule_type, settings, title="Untitled Schedule"):
     """Format schedule data for MongoDB storage"""
@@ -161,6 +202,44 @@ def create_schedule():
     except Exception as e:
         return jsonify({'error': f'Server error: {str(e)}'}), 500
 
+@app.route('/api/chat', methods=['POST', 'OPTIONS'])
+def chat():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        data = request.json
+        if not data or 'message' not in data:
+            return jsonify({'error': 'Message is required'}), 400
+
+        message = data.get('message')
+        video_title = data.get('videoTitle')
+        mode = data.get('mode', 'general')
+
+        # Generate prompt based on mode
+        prompt = get_chat_prompt(message, video_title, mode)
+
+        # Get response from Gemini
+        try:
+            response = model.generate_content(prompt)
+            formatted_response = format_gemini_response(response)
+            
+            return jsonify({
+                'response': formatted_response,
+                'status': 'success'
+            })
+        except Exception as e:
+            return jsonify({
+                'error': f'Error generating response: {str(e)}',
+                'status': 'error'
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            'error': f'Server error: {str(e)}',
+            'status': 'error'
+        }), 500
+
 @app.route('/api/schedules/<user_id>', methods=['GET', 'OPTIONS'])
 def get_user_schedules(user_id):
     if request.method == 'OPTIONS':
@@ -274,23 +353,128 @@ def update_video_progress(schedule_id):
     except Exception as e:
         return jsonify({'error': f'Error updating progress: {str(e)}'}), 500
 
+@app.route('/api/schedules/<schedule_id>/verify-video', methods=['POST', 'OPTIONS'])
+def verify_video(schedule_id):
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        data = request.json
+        if not data or 'videoTitle' not in data:
+            return jsonify({'error': 'Video title is required'}), 400
+
+        video_title = data['videoTitle']
+        schedule_object_id = ObjectId(schedule_id)
+        
+        # Check if video exists in schedule
+        schedule = schedules_collection.find_one({
+            '_id': schedule_object_id,
+            'schedule_data.videos.title': video_title
+        })
+        
+        if not schedule:
+            return jsonify({
+                'exists': False,
+                'message': 'Video not found in schedule'
+            })
+            
+        return jsonify({
+            'exists': True,
+            'message': 'Video found in schedule'
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'Error verifying video: {str(e)}'}), 500
+
+@app.route('/api/schedules/<schedule_id>/video-context/<video_title>', methods=['GET', 'OPTIONS'])
+def get_video_context(schedule_id, video_title):
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        schedule_object_id = ObjectId(schedule_id)
+        
+        # Find the video in the schedule
+        schedule = schedules_collection.find_one({
+            '_id': schedule_object_id,
+            'schedule_data.videos.title': video_title
+        })
+        
+        if not schedule:
+            return jsonify({'error': 'Video not found'}), 404
+
+        # Extract video details
+        video_info = None
+        for day in schedule['schedule_data']:
+            for video in day['videos']:
+                if video['title'] == video_title:
+                    video_info = video
+                    break
+            if video_info:
+                break
+
+        if not video_info:
+            return jsonify({'error': 'Video details not found'}), 404
+
+        return jsonify({
+            'video': {
+                'title': video_info['title'],
+                'duration': video_info['duration'],
+                'thumbnail': video_info['thumbnail'],
+                'completed': video_info['completed']
+            }
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'Error fetching video context: {str(e)}'}), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     try:
         # Check MongoDB connection
         client.admin.command('ping')
+        
+        # Check Gemini API connection
+        try:
+            test_response = model.generate_content("Test connection")
+            gemini_status = "connected"
+        except Exception as e:
+            gemini_status = f"disconnected (Error: {str(e)})"
+
         return jsonify({
             'status': 'healthy',
             'database': 'connected',
+            'gemini_api': gemini_status,
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
         return jsonify({
             'status': 'unhealthy',
             'database': 'disconnected',
+            'gemini_api': 'unknown',
             'error': str(e),
             'timestamp': datetime.now().isoformat()
         }), 500
 
 if __name__ == '__main__':
+    # Verify environment variables
+    required_vars = ['MONGODB_URI', 'GOOGLE_API_KEY']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
+        print("Please check your .env file")
+        exit(1)
+    
+    # Print startup information
+    print("Starting LearnFast API Server")
+    print(f"MongoDB URI: {MONGO_URI[:20]}..." if MONGO_URI else "MongoDB URI not set")
+    print(f"Gemini API Key: {'*' * 20}" if GOOGLE_API_KEY else "Gemini API Key not set")
+    print("\nAPI Routes:")
+    print("============")
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint != 'static':
+            print(f"{rule.rule} [{', '.join(rule.methods - {'OPTIONS', 'HEAD'})}]")
+    print("\nServer is running in development mode")
+    
     app.run(debug=True, port=5000)

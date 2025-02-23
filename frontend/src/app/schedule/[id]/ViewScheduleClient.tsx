@@ -1,10 +1,12 @@
-// src/app/schedule/[id]/ViewScheduleClient.tsx
+// src/app/schedule/[id]/ViewScheduleClient.tsx - Part 1
 
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from 'next/navigation';
 import { useAuth } from "../../../contexts/AuthContext";
 import * as Icons from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import ScheduleChatBot from '../../../components/FloatingChatBot';
 
 interface Video {
   title: string;
@@ -54,7 +56,14 @@ declare global {
   }
 }
 
+interface Toast {
+  id: string;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
 export default function ViewScheduleClient({ scheduleId }: { scheduleId: string }) {
+  // State management
   const router = useRouter();
   const { user, isAuthenticated } = useAuth();
   const [schedule, setSchedule] = useState<Schedule | null>(null);
@@ -64,7 +73,64 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
   const [expandedDays, setExpandedDays] = useState<string[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [player, setPlayer] = useState<YouTubePlayer | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterCompleted, setFilterCompleted] = useState<boolean | null>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
 
+  // Animation variants
+  const containerVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { 
+      opacity: 1, 
+      y: 0,
+      transition: { 
+        duration: 0.3,
+        when: "beforeChildren",
+        staggerChildren: 0.1
+      }
+    }
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, x: -20 },
+    visible: { 
+      opacity: 1, 
+      x: 0,
+      transition: { duration: 0.3 }
+    }
+  };
+  // src/app/schedule/[id]/ViewScheduleClient.tsx - Part 2
+
+  // Utility Functions
+  const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now().toString();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(toast => toast.id !== id));
+    }, 3000);
+  };
+
+  const formatDuration = (duration: string) => {
+    const [hours, minutes, seconds] = duration.split(':').map(Number);
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m ${seconds}s`;
+  };
+
+  const calculateProgress = () => {
+    if (!schedule) return 0;
+    const totalVideos = schedule.summary.totalVideos;
+    const completedVideos = schedule.schedule_data.reduce(
+      (acc, day) => acc + day.videos.filter(v => v.completed).length,
+      0
+    );
+    return Math.round((completedVideos / totalVideos) * 100);
+  };
+
+  // Effect Hooks
   useEffect(() => {
     // Load YouTube IFrame API
     const tag = document.createElement('script');
@@ -106,13 +172,13 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
       }
     } catch (error: any) {
       setError(error.message);
+      addToast(error.message, 'error');
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleVideoStateChange = (event: any) => {
-    // State 0 means video ended
     if (event.data === 0 && selectedVideo && schedule) {
       const dayIndex = schedule.schedule_data.findIndex(day => 
         day.videos.some(v => v.link === selectedVideo.link)
@@ -144,7 +210,6 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
     try {
       const video = schedule.schedule_data[dayIndex].videos[videoIndex];
       
-      // Don't send request if video is already in desired state
       if (video.completed === completed) return;
 
       const response = await fetch(`http://localhost:5000/api/schedules/${scheduleId}/progress`, {
@@ -167,28 +232,48 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
       updatedSchedule.schedule_data[dayIndex].videos[videoIndex].completed = completed;
       setSchedule(updatedSchedule);
 
-      // Show completion message
       if (completed && selectedVideo?.link === video.link) {
-        console.log('Video completed!');
-        // You can add a toast notification here
+        addToast('Video marked as completed!', 'success');
       }
     } catch (error: any) {
       setError(error.message);
+      addToast(error.message, 'error');
     }
   };
 
-  const formatDuration = (duration: string) => {
-    const [hours, minutes, seconds] = duration.split(':').map(Number);
-    if (hours > 0) {
-      return `${hours}h ${minutes}m`;
+  const refreshSchedule = async () => {
+    setIsRefreshing(true);
+    try {
+      await fetchSchedule();
+      addToast('Schedule refreshed successfully', 'success');
+    } catch (error: any) {
+      addToast('Failed to refresh schedule', 'error');
+    } finally {
+      setIsRefreshing(false);
     }
-    return `${minutes}m ${seconds}s`;
   };
 
+  const filterVideos = (videos: Video[]) => {
+    return videos.filter(video => {
+      const matchesSearch = video.title.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesCompletion = filterCompleted === null || video.completed === filterCompleted;
+      return matchesSearch && matchesCompletion;
+    });
+  };
+  // src/app/schedule/[id]/ViewScheduleClient.tsx - Part 3
+
+  // Loading, Error, and Not Found States
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Icons.Loader2 className="animate-spin" size={32} />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center"
+        >
+          <Icons.Loader2 className="animate-spin mx-auto mb-4" size={32} />
+          <p className="text-gray-500">Loading your schedule...</p>
+        </motion.div>
       </div>
     );
   }
@@ -196,10 +281,20 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
   if (error) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-red-500">
-          <Icons.AlertCircle className="mx-auto mb-4" size={48} />
-          <p>{error}</p>
-        </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center"
+        >
+          <Icons.AlertCircle className="mx-auto mb-4 text-red-500" size={48} />
+          <p className="text-red-500 font-medium mb-4">{error}</p>
+          <button
+            onClick={() => router.push('/my-schedules')}
+            className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            Go Back
+          </button>
+        </motion.div>
       </div>
     );
   }
@@ -207,10 +302,20 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
   if (!schedule) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <Icons.FileQuestion className="mx-auto mb-4" size={48} />
-          <p>Schedule not found</p>
-        </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center"
+        >
+          <Icons.FileQuestion className="mx-auto mb-4 text-gray-400" size={48} />
+          <p className="text-gray-500 mb-4">Schedule not found</p>
+          <button
+            onClick={() => router.push('/my-schedules')}
+            className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            Go Back
+          </button>
+        </motion.div>
       </div>
     );
   }
@@ -220,36 +325,82 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
       isDarkMode ? 'bg-[#0B1026] text-gray-200' : 'bg-[#F8FAFF] text-gray-800'
     }`}>
       {/* Navigation */}
-      <nav className="container mx-auto px-4 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <span className="text-xl font-bold">
-              <span className="text-indigo-500">Learn</span>Fast
-            </span>
-          </div>
-          <div className="flex items-center space-x-6">
-            <button
-              onClick={() => router.push('/my-schedules')}
-              className="p-2 hover:bg-gray-700/50 rounded-full"
-            >
-              <Icons.ArrowLeft size={20} />
-            </button>
-            <button
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              className="p-2 hover:bg-gray-700/50 rounded-full"
-            >
-              {isDarkMode ? <Icons.Sun size={20} /> : <Icons.Moon size={20} />}
-            </button>
+      <nav className="sticky top-0 z-20 backdrop-blur-lg bg-opacity-70 border-b border-gray-700/20">
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="text-xl font-bold">
+                <span className="text-indigo-500">Learn</span>Fast
+              </span>
+            </div>
+            <div className="flex items-center space-x-6">
+              <button
+                onClick={() => router.push('/my-schedules')}
+                className="p-2 hover:bg-gray-700/50 rounded-full"
+                title="Back to Schedules"
+              >
+                <Icons.ArrowLeft size={20} />
+              </button>
+              <button
+                onClick={refreshSchedule}
+                className={`p-2 hover:bg-gray-700/50 rounded-full ${isRefreshing ? 'animate-spin' : ''}`}
+                disabled={isRefreshing}
+                title="Refresh Schedule"
+              >
+                <Icons.RefreshCw size={20} />
+              </button>
+              <button
+                onClick={() => setIsDarkMode(!isDarkMode)}
+                className="p-2 hover:bg-gray-700/50 rounded-full"
+                title={isDarkMode ? 'Light Mode' : 'Dark Mode'}
+              >
+                {isDarkMode ? <Icons.Sun size={20} /> : <Icons.Moon size={20} />}
+              </button>
+            </div>
           </div>
         </div>
       </nav>
 
       {/* Main Content */}
-      <div className="container mx-auto px-4 py-8">
+      <motion.div 
+        className="container mx-auto px-4 py-8"
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+      >
         <div className="max-w-4xl mx-auto">
           {/* Schedule Header */}
-          <div className="mb-8">
-            <h1 className="text-2xl font-bold mb-4">{schedule.title}</h1>
+          <motion.div 
+            className="mb-8"
+            variants={itemVariants}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h1 className="text-2xl font-bold">{schedule.title}</h1>
+              <div className={`px-3 py-1 rounded-full text-sm ${
+                schedule.status === 'completed'
+                  ? 'bg-green-500/10 text-green-500'
+                  : 'bg-blue-500/10 text-blue-500'
+              }`}>
+                {schedule.status === 'completed' ? 'Completed' : 'In Progress'}
+              </div>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-500">Overall Progress</span>
+                <span className="text-sm font-medium">{calculateProgress()}%</span>
+              </div>
+              <div className="h-2 bg-gray-700/20 rounded-full overflow-hidden">
+                <motion.div
+                  className="h-full bg-indigo-500"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${calculateProgress()}%` }}
+                  transition={{ duration: 0.5, ease: "easeOut" }}
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-gray-900/50' : 'bg-white/70'}`}>
                 <div className="text-sm text-gray-500">Total Videos</div>
@@ -268,155 +419,237 @@ export default function ViewScheduleClient({ scheduleId }: { scheduleId: string 
                 <div className="text-xl font-semibold">{schedule.summary.averageDailyDuration}</div>
               </div>
             </div>
-          </div>
+          </motion.div>
+
+          {/* Search and Filters */}
+          <motion.div 
+            className="mb-6 space-y-4"
+            variants={itemVariants}
+          >
+            <div className="flex items-center space-x-4">
+              <div className="flex-1 relative">
+                <Icons.Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+                <input
+                  type="text"
+                  placeholder="Search videos..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className={`w-full pl-10 pr-4 py-2 rounded-lg ${
+                    isDarkMode ? 'bg-gray-900/50' : 'bg-white/70'
+                  } border border-gray-700/20 focus:outline-none focus:ring-2 focus:ring-indigo-500/50`}
+                />
+              </div>
+              <select
+                value={filterCompleted === null ? 'all' : filterCompleted.toString()}
+                onChange={(e) => setFilterCompleted(e.target.value === 'all' ? null : e.target.value === 'true')}
+                className={`px-4 py-2 rounded-lg ${
+                  isDarkMode ? 'bg-gray-900/50' : 'bg-white/70'
+                } border border-gray-700/20`}
+              >
+                <option value="all">All Videos</option>
+                <option value="true">Completed</option>
+                <option value="false">Incomplete</option>
+              </select>
+            </div>
+          </motion.div>
 
           {/* Schedule Days */}
-          <div className="space-y-4">
-            {schedule.schedule_data.map((day, dayIndex) => (
-              <div
-                key={day.day}
-                className={`rounded-xl overflow-hidden ${
-                  isDarkMode ? 'bg-gray-900/50' : 'bg-white/70'
-                }`}
-              >
-                <button
-                  onClick={() => toggleDayExpansion(day.day)}
-                  className="w-full px-6 py-4 flex items-center justify-between"
+          <div className="space-y-4" ref={videoContainerRef}>
+            {schedule.schedule_data.map((day, dayIndex) => {
+              const filteredVideos = filterVideos(day.videos);
+              if (filteredVideos.length === 0) return null;
+
+              return (
+                <motion.div
+                  key={day.day}
+                  variants={itemVariants}
+                  className={`rounded-xl overflow-hidden ${
+                    isDarkMode ? 'bg-gray-900/50' : 'bg-white/70'
+                  }`}
                 >
-                  <div>
-                    <h3 className="font-semibold">{day.day}</h3>
-                    <p className="text-sm text-gray-500">{day.date}</p>
-                  </div>
-                  <div className="flex items-center space-x-4">
-                    <div className="text-sm text-gray-500">
-                      {day.videos.filter(v => v.completed).length} / {day.videos.length} completed
+                  <button
+                    onClick={() => toggleDayExpansion(day.day)}
+                    className="w-full px-6 py-4 flex items-center justify-between"
+                  >
+                    <div>
+                      <h3 className="font-semibold">{day.day}</h3>
+                      <p className="text-sm text-gray-500">{day.date}</p>
                     </div>
-                    <Icons.ChevronDown
-                      size={20}
-                      className={`transform transition-transform ${
-                        expandedDays.includes(day.day) ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </div>
-                </button>
-
-                {expandedDays.includes(day.day) && (
-                  <div className="px-6 pb-4 space-y-4">
-                    {day.videos.map((video, videoIndex) => (
-                      <div
-                        key={video.link}
-                        onClick={() => setSelectedVideo(video)}
-                        className={`p-4 rounded-lg ${
-                          isDarkMode ? 'bg-gray-800/50' : 'bg-gray-50'
-                        } cursor-pointer transform transition-all duration-300 hover:scale-[1.02] hover:shadow-xl ${
-                          isDarkMode ? 'hover:bg-gray-700/50' : 'hover:bg-white'
-                        }`}
-                      >
-                        <div className="flex items-start space-x-4">
-                          <div className="flex-shrink-0 relative group">
-                            <img
-                              src={video.thumbnail}
-                              alt={video.title}
-                              className="w-32 h-18 object-cover rounded-lg"
-                            />
-                            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all rounded-lg">
-                              <Icons.Play className="text-white opacity-0 group-hover:opacity-100 transition-opacity" size={24} />
-                            </div>
-                          </div>
-
-                          <div className="flex-grow">
-                            <h4 className="font-medium mb-2">{video.title}</h4>
-                            <div className="flex items-center space-x-4 text-sm text-gray-500">
-                              <span className="flex items-center">
-                                <Icons.Clock className="mr-1" size={16} />
-                                {formatDuration(video.duration)}
-                              </span>
-                              <span className="flex items-center text-indigo-500">
-                                <Icons.PlayCircle className="mr-1" size={16} />
-                                Watch Video
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex-shrink-0">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleVideoStatusChange(dayIndex, videoIndex, !video.completed);
-                              }}
-                              className={`p-2 rounded-full ${
-                                video.completed
-                                  ? 'bg-green-500/10 text-green-500'
-                                  : isDarkMode
-                                  ? 'bg-gray-700 text-gray-400'
-                                  : 'bg-gray-200 text-gray-500'
-                              }`}
-                            >
-                              {video.completed ? (
-                                <Icons.CheckCircle size={24} />
-                              ) : (
-                                <Icons.Circle size={24} />
-                              )}
-                            </button>
-                          </div>
-                        </div>
+                    <div className="flex items-center space-x-4">
+                      <div className="text-sm text-gray-500">
+                        {day.videos.filter(v => v.completed).length} / {day.videos.length} completed
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+                      <motion.div
+                        animate={{ rotate: expandedDays.includes(day.day) ? 180 : 0 }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <Icons.ChevronDown size={20} />
+                      </motion.div>
+                    </div>
+                  </button>
+
+                  <AnimatePresence>
+                    {expandedDays.includes(day.day) && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="px-6 pb-4 space-y-4"
+                      >
+                        {filteredVideos.map((video, videoIndex) => (
+                          <motion.div
+                            key={video.link}
+                            layout
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            onClick={() => setSelectedVideo(video)}
+                            className={`p-4 rounded-lg ${
+                              isDarkMode ? 'bg-gray-800/50' : 'bg-gray-50'
+                            } cursor-pointer transform transition-all duration-300 hover:scale-[1.02] hover:shadow-xl ${
+                              isDarkMode ? 'hover:bg-gray-700/50' : 'hover:bg-white'
+                            }`}
+                          >
+                            <div className="flex items-start space-x-4">
+                              <div className="flex-shrink-0 relative group">
+                                <img
+                                  src={video.thumbnail}
+                                  alt={video.title}
+                                  className="w-32 h-18 object-cover rounded-lg"
+                                />
+                                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all rounded-lg">
+                                  <Icons.Play className="text-white opacity-0 group-hover:opacity-100 transition-opacity" size={24} />
+                                </div>
+                              </div>
+
+                              <div className="flex-grow">
+                                <h4 className="font-medium mb-2">{video.title}</h4>
+                                <div className="flex items-center space-x-4 text-sm text-gray-500">
+                                  <span className="flex items-center">
+                                    <Icons.Clock className="mr-1" size={16} />
+                                    {formatDuration(video.duration)}
+                                  </span>
+                                  <span className="flex items-center text-indigo-500">
+                                    <Icons.PlayCircle className="mr-1" size={16} />
+                                    Watch Video
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex-shrink-0">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleVideoStatusChange(dayIndex, videoIndex, !video.completed);
+                                  }}
+                                  className={`p-2 rounded-full ${
+                                    video.completed
+                                      ? 'bg-green-500/10 text-green-500'
+                                      : isDarkMode
+                                      ? 'bg-gray-700 text-gray-400'
+                                      : 'bg-gray-200 text-gray-500'
+                                  }`}
+                                >
+                                  {video.completed ? (
+                                    <Icons.CheckCircle size={24} />
+                                  ) : (
+                                    <Icons.Circle size={24} />
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              );
+            })}
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Video Popup Modal */}
-      {selectedVideo && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-80 backdrop-blur-sm"
-          onClick={() => setSelectedVideo(null)}
-        >
-          <div 
-            className="relative w-full max-w-4xl bg-black rounded-xl overflow-hidden"
-            onClick={e => e.stopPropagation()}
+      <AnimatePresence>
+        {selectedVideo && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-80 backdrop-blur-sm"
+            onClick={() => setSelectedVideo(null)}
           >
-            <button
-              onClick={() => setSelectedVideo(null)}
-              className="absolute top-4 right-4 text-white hover:text-gray-300 z-10"
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative w-full max-w-4xl bg-black rounded-xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
             >
-              <Icons.X size={24} />
-            </button>
-            
-            <div className="relative pt-[56.25%]">
-              <iframe
-                src={`${selectedVideo.link.replace('watch?v=', 'embed/')}?enablejsapi=1`}
-                title={selectedVideo.title}
-                className="absolute inset-0 w-full h-full"
-                allowFullScreen
-                onLoad={(e) => {
-                  // @ts-ignore
-                  const player = new window.YT.Player(e.target, {
-                    events: {
-                      onStateChange: handleVideoStateChange
-                    }
-                  });
-                  setPlayer(player);
-                }}
-              />
-            </div>
-            
-            <div className="p-4 bg-gray-900">
-              <h3 className="text-lg font-medium text-white mb-2">
-                {selectedVideo.title}
-              </h3>
-              <div className="flex items-center text-sm text-gray-400">
-                <Icons.Clock className="mr-1" size={16} />
-                {formatDuration(selectedVideo.duration)}
+              <button
+                onClick={() => setSelectedVideo(null)}
+                className="absolute top-4 right-4 text-white hover:text-gray-300 z-10"
+              >
+                <Icons.X size={24} />
+              </button>
+              
+              <div className="relative pt-[56.25%]">
+                <iframe
+                  src={`${selectedVideo.link.replace('watch?v=', 'embed/')}?enablejsapi=1`}
+                  title={selectedVideo.title}
+                  className="absolute inset-0 w-full h-full"
+                  allowFullScreen
+                  onLoad={(e) => {
+                    // @ts-ignore
+                    const player = new window.YT.Player(e.target, {
+                      events: {
+                        onStateChange: handleVideoStateChange
+                      }
+                    });
+                    setPlayer(player);
+                  }}
+                />
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+              
+              <div className="p-4 bg-gray-900">
+                <h3 className="text-lg font-medium text-white mb-2">
+                  {selectedVideo.title}
+                </h3>
+                <div className="flex items-center text-sm text-gray-400">
+                  <Icons.Clock className="mr-1" size={16} />
+                  {formatDuration(selectedVideo.duration)}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Toast Notifications */}
+      <div className="fixed bottom-4 right-4 z-50 space-y-2">
+        <AnimatePresence>
+          {toasts.map((toast) => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, y: 20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.9 }}
+              className={`px-4 py-2 rounded-lg shadow-lg ${
+                toast.type === 'success' ? 'bg-green-500' :
+                toast.type === 'error' ? 'bg-red-500' :
+                'bg-blue-500'
+              } text-white`}
+            >
+              {toast.message}
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Chat Bot */}
+      <ScheduleChatBot schedule={schedule} />
     </div>
   );
 }
