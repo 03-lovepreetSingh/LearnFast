@@ -1,4 +1,4 @@
-// components/ScheduleChatBot.tsx
+// components/ScheduleChatBot.tsx code
 "use client";
 import { useState, useRef, useEffect } from "react";
 import * as Icons from "lucide-react";
