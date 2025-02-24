@@ -45,7 +45,7 @@ export default function Login() {
       if (response.data.token) {
         // Use the login function from AuthContext
         login(response.data.user, response.data.token);
-        router.push("/dashboard");
+        router.push("/my-schedules");
       }
     } catch (err: any) {
       setError(
