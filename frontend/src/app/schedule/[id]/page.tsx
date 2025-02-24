@@ -1,14 +1,11 @@
 // src/app/schedule/[id]/page.tsx
 import ViewScheduleClient from './ViewScheduleClient';
 
-interface PageProps {
-  params: {
-    id: string;
-  }
-}
-
-const ViewSchedulePage = async ({ params }: PageProps) => {
-  return <ViewScheduleClient scheduleId={params.id} />;
+type Props = {
+  params: Promise<{ id: string }>;
 };
 
-export default ViewSchedulePage;
+export default async function ViewSchedulePage({ params }: Props) {
+  const resolvedParams = await params;
+  return <ViewScheduleClient scheduleId={resolvedParams.id} />;
+}
