@@ -1,7 +1,7 @@
 # Learn Fast
 
 **Learn Fast** is a web application built with [Next.js](https://nextjs.org/), designed to provide fast and efficient learning resources for users. This project leverages the power of modern web technologies to ensure a high-performance, SEO-friendly, and scalable learning platform.
-
+**I 03-love updated the repository
 ## 🚀 Features
 
 - ⚡ Built with Next.js for server-side rendering and static site generation
